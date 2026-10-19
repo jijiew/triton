@@ -59,6 +59,16 @@ def items(view, gpu, kind):
     return {(i["id"], i["first_sha"][:2]) for i in view["gpus"][gpu][kind]}
 
 
+def test_mi350_core_step_keeps_its_name_before_the_rename():
+    assert r.group_of("Run TLX unit tests") == r.group_of("Run TLX core tests") == "TLX core"
+
+
+def test_renamed_step_keeps_its_known_failures():
+    old = job("mi350 / mi350-tlx-test", step("Run TLX unit tests", "failure", ["t1"]))
+    v = main([push(1, old), push(2, tlx("t1", gpu="mi350"))])
+    assert items(v, "MI350", "known") == {("t1", "01")} and v["gpus"]["MI350"]["known"][0]["step"] == CORE
+
+
 def test_gpu_and_job_key_come_from_the_job_name_prefix():
     assert r.gpu_of({"wf": "gpu-tests.yml"}, {"name": "b200 / b200-tlx-test"}) == "B200"
     assert r.gpu_of({"wf": "gpu-tests.yml"}, {"name": "build"}) is None
@@ -137,7 +147,7 @@ def test_scheduled_run_on_same_sha_marks_reproduced():
 
 
 def test_unit_whose_step_disappeared_is_dropped():
-    renamed = job("b200 / b200-tlx-test", step("Run TLX unit tests", "success"))
+    renamed = job("b200 / b200-tlx-test", step("Run TLX smoke tests", "success"))
     v = main([push(1, tlx("t1")), push(2, renamed)])
     assert v["gpus"]["B200"]["verdict"] == "passing"
 

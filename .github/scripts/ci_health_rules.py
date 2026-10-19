@@ -24,7 +24,7 @@ SUMMARY_JOB = "GPU tests"
 
 #: Step name -> test group. A step with a group is a test step; any other step is setup.
 GROUPS = [
-    (r"^Run TLX core tests$", "TLX core"),
+    (r"^Run TLX (core|unit) tests$", "TLX core"),  # MI350 called it "unit" until its rename
     (r"^Run TLX tutorial correctness tests$", "Tutorial correctness"),
     (r"^Run device-agnostic TLX codegen tests$", "TLX codegen"),
     (r"^Run TritonBench", "TritonBench"),
@@ -162,16 +162,18 @@ def _commit(run):
 
 
 def _history(pushes):
-    """Walk pushes oldest first. Returns, per unit (gpu, job, step): its current failing tests and the run index
-    of its last result; and per run index: {gpu: {"new", "known"}} statuses seen there."""
-    state, last, seen = {}, {}, collections.defaultdict(dict)
+    """Walk pushes oldest first. A unit is (gpu, job, test group), so a renamed step keeps its history. Returns, per
+    unit: its current failing tests, the run index of its last result and its latest step name; and per run index:
+    {gpu: {"new", "known"}} statuses seen there."""
+    state, last, names, seen = {}, {}, {}, collections.defaultdict(dict)
     for i, run in enumerate(pushes):
         for gpu, j in _gpu_jobs(run):
             for s in j["steps"]:
                 res = step_result(j, s)
                 if res is None:
                     continue
-                unit = (gpu, job_key(j["name"]), s["name"])
+                unit = (gpu, job_key(j["name"]), group_of(s["name"]))
+                names[unit] = s["name"]
                 prev, cur = state.get(unit, {}), {}
                 for f in s.get("failures") or [] if res == "fail" else []:
                     if f["id"] in prev:
@@ -184,11 +186,11 @@ def _history(pushes):
                         }
                     seen[i].setdefault(gpu, set()).add("new" if cur[f["id"]]["streak"] == 1 else "known")
                 state[unit], last[unit] = cur, i
-    return state, last, seen
+    return state, last, names, seen
 
 
 def _sched_result(runs, sha, unit, test_id):
-    gpu, key, name = unit
+    gpu, key, group = unit
     found = "none"
     for run in runs:
         if run.get("wf") != "gpu-tests.yml" or run["event"] != "schedule" or run.get("head_sha") != sha:
@@ -197,7 +199,7 @@ def _sched_result(runs, sha, unit, test_id):
             if g != gpu or job_key(j["name"]) != key:
                 continue
             for s in j["steps"]:
-                if s["name"] == name and step_result(j, s):
+                if group_of(s["name"]) == group and step_result(j, s):
                     if any(f["id"] == test_id for f in s.get("failures") or []):
                         return "reproduced"
                     found = "not reproduced"
@@ -206,13 +208,13 @@ def _sched_result(runs, sha, unit, test_id):
 
 def main_view(runs, asof):
     pushes = [r for r in _pushes(runs) if r["created_at"] <= asof]
-    state, last, seen = _history(pushes)
-    # A unit counts only while its step still exists in the latest push that ran its job.
+    state, last, names, seen = _history(pushes)
+    # A unit counts only while its test group still exists in the latest push that ran its job.
     latest_steps = {}
     for run in pushes:
         for gpu, j in _gpu_jobs(run):
             if j["conclusion"] in RAN:
-                latest_steps[(gpu, job_key(j["name"]))] = {s["name"] for s in j["steps"]}
+                latest_steps[(gpu, job_key(j["name"]))] = {group_of(s["name"]) for s in j["steps"]} - {None}
     gpus = {}
     for gpu in GPUS:
         ran = [r for r in pushes if any(g == gpu and j["conclusion"] in RAN for g, j in _gpu_jobs(r))]
@@ -228,7 +230,7 @@ def main_view(runs, asof):
             for f in fails.values():
                 first = pushes[f["first"]]
                 item = {
-                    "gpu": gpu, "job": unit[1], "step": unit[2], "id": f["id"], "msg": f["msg"], "first_sha":
+                    "gpu": gpu, "job": unit[1], "step": names[unit], "id": f["id"], "msg": f["msg"], "first_sha":
                     first.get("head_sha") or "", "first_pr": first.get("pr"), "first_author": first.get("author"),
                     "first_t": first["created_at"], "first_url": first.get("url"), "prev_sha": f["prev_sha"], "streak":
                     f["streak"]
